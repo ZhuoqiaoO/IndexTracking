@@ -1,0 +1,111 @@
+library(PSG)
+library(quantmod)
+library(dplyr,warn.conflicts = FALSE)
+library(ggplot2)
+
+#importing DJI data
+sd <- as.Date("2013-08-01")
+ed <- as.Date("2023-08-31")
+dowsd <- as.Date('2019-3-21')
+etfsd <- as.Date('2013-08-01')
+etfed <- as.Date('2019-3-21')
+
+all_assets <- c("AMZN", "AXP","AMGN", "AAPL", "BA", "CAT", "CSCO", "CVX", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "KO", "JPM" , "MCD", "MMM", "MRK", "MSFT", "NKE", "PG", "TRV", "UNH", "CRM", "VZ", "V","WMT", "DIS",'DOW')
+assets <- c("AMZN", "AXP","AMGN", "AAPL", "BA", "CAT", "CSCO", "CVX", "GS", "HD", "HON", "IBM", "INTC", "JNJ", "KO", "JPM" , "MCD", "MMM", "MRK", "MSFT", "NKE", "PG", "TRV", "UNH", "CRM", "VZ", "V","WMT", "DIS")
+getSymbols("^DJI", from = start_date, to = end_date)
+DJI <- Ad(DJI)
+
+data <- list()
+for (stock in assets) {
+  data[[stock]] <- Ad(getSymbols(stock,from=sd,to=ed,auto.assign=FALSE))
+}
+
+#DOW DATA
+DJI_ETF <- getSymbols('DIA',dia.env <- new.env(),from=etfsd, to=etfed)
+DIA <- dia.env$DIA[,ncol(dia.env$DIA)]
+DOW1 <- getSymbols('DOW',dow.env <- new.env(),from=dowsd, to=ed)
+DOW <- dow.env$DOW[,ncol(dow.env$DOW)]
+DOW <- rbind(DIA,DOW)
+
+#All data
+stock_data <- do.call(merge,c(data,all=TRUE))
+stock_data_new <- cbind(stock_data,DOW)
+colnames(stock_data_new) <- all_assets
+
+#preliminary info:
+initial_value = 100
+gamma = 0.05
+C = initial_value*ncol(stock_data_new)
+
+#formulating design matrix matrix_1:
+theta_t0 <- diff(log(DJI),lag=1)
+theta_t0 <- theta_t0[2:nrow(theta_t0)]
+theta_ti <- diff(log(stock_data_new)/(C*(1-gamma)))
+theta_ti <- theta_ti[2:nrow(theta_ti)]
+matrix_1 <- cbind(theta_ti,theta_t0)
+
+#formulating cardinality matrix matrix_2:
+matrix_2 <- matrix(1,1,30)
+colnames(matrix_2) <- all_assets
+
+#formulating matrix_ksibuy matrix_3:
+matrix_3 <- matrix(100,1,30)
+colnames(matrix_3) <- all_assets
+
+#formulating matrix_pol matrix_4:
+matrix_4 <- matrix(1,1,30)
+row2 <- matrix(100*100/30,1,30)
+matrix_4 <- rbind(matrix_4,row2)
+colnames(matrix_4) <- all_assets
+matrix_4
+
+#problem statement'
+problem_list <- list()
+problem_list$matrix_inmmax <- matrix_1
+problem_list$matrix_ksi <- matrix_2
+problem_list$matrix_ksibuy <- matrix_3
+problem_list$matrix_ksipol <- matrix_4
+problem_list$problem_statement <- sprintf (
+  "
+minimize
+  max_risk(matrix_inmmax)
+Constraint: <= 30
+  cardn_pos(0.01, matrix_ksi)
+Constraint: <= 0
+  buyin_pos(0.01, matrix_ksibuy)
+Constraint: <= 3000
+  linear(matrix_ksi)
+  +variable(trcost)
+Constraint: <= 1
+  variable(trcost)
+Constraint: <= 0
+  -variable(trcost)
+  +0.01*polynom_abs(matrix_ksipol)
+  +100*cardn_pos(0.01, matrix_ksipol)
+  +100*cardn_neg(0.01, matrix_ksipol)
+Solver: precision = 3, stages = 3
+Box: >=0 "
+)
+
+#results
+result <- rpsg_solver(problem_list)
+point_optimal <- result$point_problem_1
+point_optimal <- point_optimal[-length(point_optimal)]
+length(point_optimal)
+
+# Calculate cumulative returns
+port_returns <- theta_ti %*% point_optimal 
+port_rates <- cumprod(1 + port_returns)
+port_cum_return <- 100 * port_rates
+
+dow_rates <- cumprod(1 + theta_t0)
+dow_rates <- as.numeric(dow_rates)
+dow_cum_return <- 100 * dow_rates
+
+#Graph
+set.seed(123)
+y <- replicate(length(dow_cum_return),100)
+plot(x,y,col='white',ylim=c(100,230),xlab='Time',ylab='Return',main='Blue= Portfolio, Red= Dow Jones')
+lines(x,dow_cum_return,col='red')
+lines(x,port_cum_return, col='blue')
+
